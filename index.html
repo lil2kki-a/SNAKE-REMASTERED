@@ -711,7 +711,9 @@
   }
   loadSave();
 
-  let snake, prevSnake, dir, nextDir, foods, obstacles;
+  let snake, prevSnake, dir, foods, obstacles;
+  let inputQueue = [];
+  const MAX_INPUT_QUEUE = 2;
   let score, alive, paused;
   let baseTick, acc, lastTick, slowTimer, comboTimer, comboCount;
   let particles, shakeTime, flashText, flashTime;
@@ -1023,7 +1025,7 @@
     gameMode = mode || 'classic';
     snake = [{x:12,y:12},{x:11,y:12},{x:10,y:12}];
     prevSnake = snake.map(s => ({...s}));
-    dir = {x:1,y:0}; nextDir = {x:1,y:0};
+    dir = {x:1,y:0}; inputQueue = [];
     foods = []; obstacles = []; particles = [];
     score = 0; alive = true; paused = false;
     baseTick = 135; acc = 0; slowTimer = 0;
@@ -2393,8 +2395,17 @@
     else drawBossNapoleon(now);
   }
 
+  function queueDir(nd) {
+    if (!nd) return;
+    const last = inputQueue.length > 0 ? inputQueue[inputQueue.length - 1] : dir;
+    if (nd.x === last.x && nd.y === last.y) return;      // уже едем туда
+    if (nd.x === -last.x && nd.y === -last.y) return;    // разворот запрещён
+    if (inputQueue.length >= MAX_INPUT_QUEUE) return;
+    inputQueue.push(nd);
+  }
+  
   function step() {
-    dir = nextDir;
+    if (inputQueue.length > 0) dir = inputQueue.shift();  // было: dir = nextDir;
     prevSnake = snake.map(s => ({...s}));
     const head = { x:snake[0].x + dir.x, y:snake[0].y + dir.y };
     head.x = (head.x + COLS) % COLS;
@@ -3967,13 +3978,30 @@
 
   let pointerActive = false, pointerId = null;
   let pointerStartX = 0, pointerStartY = 0, pointerStartTime = 0;
-  const SWIPE_MIN = 22;
+  let pointerMoved = false;
+  const SWIPE_MIN = 18;                       // было 22 — чуть чувствительнее
+  
   function toCanvasCoords(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     return { x: (clientX - rect.left) / rect.width * W, y: (clientY - rect.top) / rect.height * H };
   }
   function pointerStart(x, y, id) {
     pointerActive = true; pointerId = id;
+    pointerStartX = x; pointerStartY = y;
+    pointerStartTime = performance.now();
+    pointerMoved = false;
+  }
+  function pointerMove(x, y) {
+    if (!pointerActive) return;
+    if (inMiniGame && miniGame) return;       // в мини-играх свайп не нужен
+    const dx = x - pointerStartX, dy = y - pointerStartY;
+    if (Math.hypot(dx, dy) < SWIPE_MIN) return;
+    pointerMoved = true;
+    if (screen === 'playing' && alive && !paused) {
+      if (Math.abs(dx) > Math.abs(dy)) queueDir(dx > 0 ? {x:1,y:0} : {x:-1,y:0});
+      else                             queueDir(dy > 0 ? {x:0,y:1} : {x:0,y:-1});
+    }
+    // сброс опорной точки → можно слать следующий свайп не отпуская палец
     pointerStartX = x; pointerStartY = y;
     pointerStartTime = performance.now();
   }
@@ -3983,37 +4011,25 @@
     const dx = x - pointerStartX, dy = y - pointerStartY;
     const dt = performance.now() - pointerStartTime;
     const dist = Math.hypot(dx, dy);
-    handleGesture(dx, dy, dist, dt, x, y);
+    if (!pointerMoved && dist < SWIPE_MIN && dt < 400) handleTap(x, y);
   }
-  function handleGesture(dx, dy, dist, dt, x, y) {
+  function handleTap(x, y) {
     if (inMiniGame && miniGame) {
-      if (miniGame.type === 'timing') { if (dist < SWIPE_MIN) timingPress(); }
-      else if (miniGame.type === 'memory') {
-        if (dist < SWIPE_MIN && miniGame.phase === 'input') {
-          const p = toCanvasCoords(x, y);
-          const quads = miniGame.quadRects || [];
-          for (let i=0;i<quads.length;i++) {
-            const q = quads[i];
-            if (p.x >= q.x && p.x <= q.x + q.w && p.y >= q.y && p.y <= q.y + q.h) { memoryInput(i); break; }
-          }
+      if (miniGame.type === 'timing') { timingPress(); return; }
+      if (miniGame.type === 'memory' && miniGame.phase === 'input') {
+        const p = toCanvasCoords(x, y);
+        const quads = miniGame.quadRects || [];
+        for (let i = 0; i < quads.length; i++) {
+          const q = quads[i];
+          if (p.x >= q.x && p.x <= q.x + q.w && p.y >= q.y && p.y <= q.y + q.h) { memoryInput(i); return; }
         }
       }
       return;
     }
     if (screen !== 'playing' || !alive) return;
-    if (dist < SWIPE_MIN && dt < 400) {
-      paused = !paused;
-      if (paused) { SFX.pauseOn(); vibrate(15); } else SFX.pauseOff();
-      return;
-    }
-    if (paused) return;
-    if (Math.abs(dx) > Math.abs(dy)) {
-      if (dx > 0 && dir.x !== -1) nextDir = {x:1, y:0};
-      else if (dx < 0 && dir.x !== 1) nextDir = {x:-1, y:0};
-    } else {
-      if (dy > 0 && dir.y !== -1) nextDir = {x:0, y:1};
-      else if (dy < 0 && dir.y !== 1) nextDir = {x:0, y:-1};
-    }
+    paused = !paused;
+    if (paused) { SFX.pauseOn(); vibrate(15); inputQueue.length = 0; }
+    else        SFX.pauseOff();
   }
 
   canvas.addEventListener('pointerdown', e => {
@@ -4037,6 +4053,7 @@
     }
     if (!pointerActive || e.pointerId !== pointerId) return;
     e.preventDefault();
+    pointerMove(e.clientX, e.clientY);   // ← свайп теперь летит сюда
   }, { passive:false });
 
   canvas.addEventListener('pointerup', e => {
@@ -4052,9 +4069,8 @@
     if (inMiniGame && miniGame && miniGame.type === 'catch') {
       miniGame.pointerActive = false;
     }
-    pointerActive = false; pointerId = null;
+    pointerActive = false; pointerId = null; pointerMoved = false;
   }, { passive:true });
-  canvas.addEventListener('contextmenu', e => e.preventDefault());
 
   document.addEventListener('keydown', e => {
     const k = e.key;
@@ -4126,10 +4142,10 @@
     const down = (k === 'ArrowDown' || k === 's' || k === 'S' || k === 'ы' || k === 'Ы');
     const left = (k === 'ArrowLeft' || k === 'a' || k === 'A' || k === 'ф' || k === 'Ф');
     const right = (k === 'ArrowRight' || k === 'd' || k === 'D' || k === 'в' || k === 'В');
-    if (up && dir.y !== 1) nextDir = {x:0, y:-1};
-    else if (down && dir.y !== -1) nextDir = {x:0, y:1};
-    else if (left && dir.x !== 1) nextDir = {x:-1, y:0};
-    else if (right && dir.x !== -1) nextDir = {x:1, y:0};
+    if (up)         queueDir({x:0, y:-1});
+    else if (down)  queueDir({x:0, y:1});
+    else if (left)  queueDir({x:-1, y:0});
+    else if (right) queueDir({x:1, y:0});
   });
   document.addEventListener('keyup', e => {
     const k = e.key;
@@ -4190,7 +4206,7 @@
 
   document.addEventListener('visibilitychange', () => {
     pageHidden = document.hidden;
-    if (pageHidden && screen === 'playing' && alive && !inMiniGame) paused = true;
+    if (pageHidden && screen === 'playing' && alive && !inMiniGame) { paused = true; inputQueue.length = 0; }
   });
 
   initMusic();
