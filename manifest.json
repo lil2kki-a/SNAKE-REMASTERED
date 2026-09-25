@@ -1,0 +1,13 @@
+{
+  "name": "SNAKE Remastered",
+  "short_name": "SNAKE",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    { "src": "https://github.com/lil2kki-a.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "https://github.com/lil2kki-a.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
